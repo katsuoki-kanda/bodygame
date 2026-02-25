@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ポーズ・マスター 60 - MEGA FONT</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            font-family: 'Arial Black', 'Hiragino Kaku Gothic Pro', 'Meiryo', sans-serif;
+        }
+
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        video { display: none; }
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover; 
+            transform: scaleX(-1);
+        }
+
+        /* UIヘッダー */
+        .ui-header {
+            position: absolute;
+            top: 15px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        .info-box {
+            background: rgba(0,0,0,0.7);
+            padding: 8px 20px;
+            border-radius: 12px;
+            font-size: 24px;
+            border: 2px solid;
+            font-weight: bold;
+        }
+        #score-display { color: #00ffcc; border-color: #00ffcc; }
+        #timer-display { color: #ff3366; border-color: #ff3366; }
+
+        /* 巨大指示テキスト */
+        #command-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            width: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #command-text {
+            /* 画面横幅の約35%のサイズ。スマホ・PC両方で巨大化します */
+            font-size: clamp(120px, 35vw, 400px); 
+            font-weight: 900;
+            color: #fff;
+            line-height: 1;
+            /* 視認性を極限まで高める3重のシャドウ */
+            text-shadow: 
+                4px 4px 0px #000,
+                -4px -4px 0px #000,
+                0 0 50px rgba(0,0,0,1),
+                0 0 20px #ff00ff;
+            white-space: nowrap;
+        }
+
+        /* オーバーレイ */
+        .overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: white;
+            text-align: center;
+        }
+
+        .btn-start {
+            padding: 20px 50px;
+            font-size: 28px;
+            background: #ff0000;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 0 25px rgba(255,0,0,0.6);
+        }
+
+        .guide-text {
+            margin-top: 25px;
+            font-size: 18px;
+            line-height: 1.6;
+            color: #ccc;
+        }
+        .highlight { color: #00ffcc; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+
+        <div class="ui-header">
+            <div id="score-display" class="info-box">SCORE: <span id="val-score">0</span></div>
+            <div id="timer-display" class="info-box">TIME: <span id="val-timer">60</span></div>
+        </div>
+
+        <div id="command-container">
+            <div id="command-text">READY?</div>
+        </div>
+
+        <div id="start-screen" class="overlay">
+            <h1 style="font-size: 40px; margin-bottom: 10px;">ポーズ・マスター 60</h1>
+            <button class="btn-start" onclick="initApp()">カメラを起動する</button>
+            <div class="guide-text">
+                <span class="highlight">【開始ポーズ】</span><br>
+                <b>「両手をあげる」＋「スクワット」</b><br>
+                を同時に行うとスタート！
+            </div>
+        </div>
+
+        <div id="result-screen" class="overlay" style="display: none;">
+            <h1 style="font-size: 60px; color: #ffcc00; margin-bottom: 0;">TIME UP!</h1>
+            <div style="font-size: 50px; margin: 20px 0;">SCORE: <span id="final-score" style="color:#00ffcc;">0</span></div>
+            <div class="guide-text" style="background: rgba(255,255,255,0.1); padding: 25px; border-radius: 15px;">
+                <span class="highlight">もう一度あそぶには？</span><br>
+                再び <b>「両手をあげてスクワット」</b> をしてください
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const commands = ["両手", "左手", "右手", "両足", "左足", "右足"];
+        let currentTarget = "";
+        let score = 0;
+        let timeLeft = 60;
+        let gameActive = false;
+        let timerInterval = null;
+        let appInitialized = false;
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const synth = window.speechSynthesis;
+
+        function playSound(freq, duration) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function speak(text) {
+            synth.cancel();
+            const uttr = new SpeechSynthesisUtterance(text);
+            uttr.lang = 'ja-JP';
+            uttr.rate = 1.9; // 少し速めに発音
+            synth.speak(uttr);
+        }
+
+        function nextCommand() {
+            const oldTarget = currentTarget;
+            while (currentTarget === oldTarget) {
+                currentTarget = commands[Math.floor(Math.random() * commands.length)];
+            }
+            document.getElementById('command-text').innerText = currentTarget;
+            speak(currentTarget);
+        }
+
+        function startGame() {
+            if (gameActive) return;
+            
+            gameActive = true;
+            score = 0;
+            timeLeft = 60;
+            
+            document.getElementById('val-score').innerText = score;
+            document.getElementById('val-timer').innerText = timeLeft;
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('result-screen').style.display = 'none';
+            
+            playSound(880, 0.5);
+            speak("ゲームスタート");
+            nextCommand();
+
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                document.getElementById('val-timer').innerText = timeLeft;
+                if (timeLeft <= 0) endGame();
+            }, 1000);
+        }
+
+        function endGame() {
+            gameActive = false;
+            clearInterval(timerInterval);
+            document.getElementById('result-screen').style.display = 'flex';
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('command-text').innerText = "終了!";
+            speak("終了。スコアは" + score + "点です");
+        }
+
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            if (angle > 180.0) angle = 360 - angle;
+            return angle;
+        }
+
+        function onResults(results) {
+            canvasElement.width = results.image.width;
+            canvasElement.height = results.image.height;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#ffffff', lineWidth: 1});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#ff3366', radius: 2});
+
+                const lm = results.poseLandmarks;
+                const nose = lm[0], lWrist = lm[15], rWrist = lm[16];
+                const lAnkle = lm[27], rAnkle = lm[28], lKnee = lm[25], rKnee = lm[26], lHip = lm[23], rHip = lm[24];
+
+                // --- 判定変数 ---
+                const lHandUp = lWrist.y < nose.y;
+                const rHandUp = rWrist.y < nose.y;
+                const lAngle = calculateAngle(lHip, lKnee, lAnkle);
+                const rAngle = calculateAngle(rHip, rKnee, rAnkle);
+                const ankleDiff = lAnkle.y - rAnkle.y; 
+
+                const THRESH_DOWN = 148; // 少し判定を甘くしてテンポアップ
+                const LIFT_GAP = 0.05;   
+
+                const isBothHandsUp = lHandUp && rHandUp;
+                const isLHandOnly = lHandUp && !rHandUp;
+                const isRHandOnly = !lHandUp && rHandUp;
+                const isSquat = lAngle < THRESH_DOWN && rAngle < THRESH_DOWN && Math.abs(ankleDiff) < LIFT_GAP;
+                const isLFootUp = ankleDiff < -LIFT_GAP && lAngle < THRESH_DOWN;
+                const isRFootUp = ankleDiff > LIFT_GAP && rAngle < THRESH_DOWN;
+
+                // --- 開始・再開 ---
+                if (!gameActive && isBothHandsUp && isSquat) {
+                    startGame();
+                }
+
+                // --- ターゲット判定 ---
+                if (gameActive) {
+                    let success = false;
+                    switch(currentTarget) {
+                        case "両手": if(isBothHandsUp) success = true; break;
+                        case "左手": if(isLHandOnly) success = true; break;
+                        case "右手": if(isRHandOnly) success = true; break;
+                        case "両足": if(isSquat) success = true; break;
+                        case "左足": if(isLFootUp) success = true; break;
+                        case "右足": if(isRFootUp) success = true; break;
+                    }
+
+                    if (success) {
+                        score++;
+                        document.getElementById('val-score').innerText = score;
+                        playSound(1200, 0.08); // 短い正解音
+                        nextCommand();
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        });
+
+        pose.setOptions({ modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        function initApp() {
+            if (appInitialized) return;
+            audioCtx.resume();
+            appInitialized = true;
+            
+            const startBtn = document.querySelector('.btn-start');
+            startBtn.style.display = 'none';
+            document.querySelector('.guide-text').innerHTML = "<span style='color:#ff3366; font-size:24px;'>カメラを準備中...<br>全身を映してください！</span>";
+            
+            camera.start().then(() => {
+                document.querySelector('.guide-text').innerHTML = "準備完了！<br><b style='font-size:30px; color:#00ffcc;'>両手をあげてスクワット</b><br>でゲーム開始！";
+            });
+        }
+    </script>
+</body>
+</html>
