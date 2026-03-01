@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ポーズ・マスター 60 - Pro Edition</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            font-family: 'Arial Black', 'Hiragino Kaku Gothic Pro', 'Meiryo', sans-serif;
+        }
+
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        video { display: none; }
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover; 
+            transform: scaleX(-1);
+        }
+
+        .ui-header {
+            position: absolute;
+            top: 15px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        .info-box {
+            background: rgba(0,0,0,0.7);
+            padding: 8px 30px;
+            border-radius: 12px;
+            font-size: 28px;
+            border: 2px solid;
+            font-weight: bold;
+            min-width: 250px;
+            text-align: center;
+        }
+        #score-display { color: #00ffcc; border-color: #00ffcc; }
+        #timer-display { color: #ff3366; border-color: #ff3366; }
+
+        #command-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            width: 100%;
+            pointer-events: none;
+            z-index: 10;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #command-text {
+            font-size: clamp(160px, 60vw, 700px); 
+            font-weight: 900;
+            color: #00ff00;
+            line-height: 1;
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+            text-shadow: 
+                4px 4px 0px #000,
+                -4px -4px 0px #000,
+                0 0 50px rgba(0,0,0,1),
+                0 0 30px rgba(0, 255, 0, 0.8); 
+            white-space: nowrap;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: white;
+            text-align: center;
+        }
+
+        .overlay.preview-mode {
+            background: rgba(0,0,0,0.4);
+        }
+
+        .btn-start {
+            padding: 20px 50px;
+            font-size: 28px;
+            background: #ff0000;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 0 25px rgba(255,0,0,0.6);
+        }
+
+        .guide-text {
+            margin-top: 25px;
+            font-size: 18px;
+            line-height: 1.6;
+            color: #fff;
+            text-shadow: 0 0 10px #000;
+        }
+        .highlight { color: #00ff00; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+
+        <div class="ui-header">
+            <div id="score-display" class="info-box">SCORE: <span id="val-score">0</span></div>
+            <div id="timer-display" class="info-box">TIME: <span id="val-timer">60</span></div>
+        </div>
+
+        <div id="command-container">
+            <div id="command-text"></div>
+        </div>
+
+        <div id="start-screen" class="overlay">
+            <h1 style="font-size: 40px; margin-bottom: 10px;">ポーズ・マスター 60</h1>
+            <button class="btn-start" onclick="initApp()">カメラを起動する</button>
+            <div id="setup-guide" class="guide-text">
+                カメラを起動して、体全体が映る位置に下がってください。
+            </div>
+        </div>
+
+        <div id="result-screen" class="overlay" style="display: none;">
+            <h1 id="result-title" style="font-size: 60px; color: #ffcc00; margin-bottom: 0;">TIME UP!</h1>
+            <div style="font-size: 50px; margin: 20px 0;">SCORE: <span id="final-score" style="color:#00ff00;">0</span></div>
+            <div class="guide-text" style="background: rgba(0,0,0,0.6); padding: 25px; border-radius: 15px;">
+                <span class="highlight">もう一度あそぶには？</span><br>
+                再び <b>「両手をあげてスクワット」</b> して直立に戻る
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const commands = ["両手", "左手", "右手", "両足", "左足", "右足"];
+        let currentTarget = "";
+        let score = 0;
+        let timeLeft = 60;
+        let gameActive = false;
+        let waitingForNeutral = false; 
+        let isProcessingSuccess = false; 
+        let timerInterval = null;
+        let appInitialized = false;
+
+        let handsUpStartTime = null; 
+        const EXIT_HOLD_TIME = 2500; 
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const synth = window.speechSynthesis;
+
+        function playSound(freq, duration) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        function speak(text) {
+            synth.cancel();
+            const uttr = new SpeechSynthesisUtterance(text);
+            uttr.lang = 'ja-JP';
+            uttr.rate = 1.9;
+            synth.speak(uttr);
+        }
+
+        function triggerRealStart() {
+            waitingForNeutral = false;
+            gameActive = true;
+            isProcessingSuccess = false;
+            score = 0;
+            timeLeft = 60;
+            document.getElementById('val-score').innerText = score;
+            document.getElementById('val-timer').innerText = timeLeft;
+            
+            //playSound(880, 0.5);
+            speak("スタート！");
+            nextCommand();
+
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                document.getElementById('val-timer').innerText = timeLeft;
+                if (timeLeft <= 0) endGame(false);
+            }, 1000);
+        }
+
+        function prepareStart() {
+            if (gameActive || waitingForNeutral) return;
+            waitingForNeutral = true;
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('result-screen').style.display = 'none';
+            // ガイドテキストのみ表示
+            document.getElementById('command-text').innerText = "姿勢を戻して！";
+            document.getElementById('command-text').style.fontSize = "clamp(40px, 10vw, 100px)";
+            //speak("姿勢を戻してください");
+        }
+
+        function nextCommand() {
+            const oldTarget = currentTarget;
+            while (currentTarget === oldTarget) {
+                currentTarget = commands[Math.floor(Math.random() * commands.length)];
+            }
+            
+            const cmdEl = document.getElementById('command-text');
+            cmdEl.innerText = currentTarget; 
+            cmdEl.style.fontSize = "clamp(160px, 60vw, 700px)";
+            cmdEl.style.color = "#00ff00"; 
+            cmdEl.style.textShadow = "4px 4px 0px #000, -4px -4px 0px #000, 0 0 50px rgba(0,0,0,1), 0 0 30px rgba(0, 255, 0, 0.8)";
+            
+            speak(currentTarget);
+        }
+
+        function endGame(isAborted = false) {
+            gameActive = false;
+            waitingForNeutral = false;
+            clearInterval(timerInterval);
+            
+            const resultScr = document.getElementById('result-screen');
+            resultScr.style.display = 'flex';
+            resultScr.classList.add('preview-mode');
+            
+            document.getElementById('final-score').innerText = score;
+            
+            // 終了・中断の文字表示を削除（空にする）
+            const cmdEl = document.getElementById('command-text');
+            cmdEl.innerText = ""; 
+
+            if (isAborted) {
+                document.getElementById('result-title').innerText = "QUIT GAME";
+                speak("ゲームを中断しました");
+            } else {
+                document.getElementById('result-title').innerText = "TIME UP!";
+                speak("終了！スコアは" + score + "点です");
+            }
+        }
+
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            if (angle > 180.0) angle = 360 - angle;
+            return angle;
+        }
+
+        function onResults(results) {
+            canvasElement.width = results.image.width;
+            canvasElement.height = results.image.height;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (!gameActive) {
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                if (results.poseLandmarks) {
+                    drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: 'rgba(255,255,255,0.6)', lineWidth: 2});
+                    drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#00ff00', radius: 3});
+                }
+            } else {
+                canvasCtx.fillStyle = '#000';
+                canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+            }
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+                const nose = lm[0], lWrist = lm[15], rWrist = lm[16];
+                const lAnkle = lm[27], rAnkle = lm[28], lKnee = lm[25], rKnee = lm[26], lHip = lm[23], rHip = lm[24];
+
+                const lHandUp = lWrist.y < nose.y;
+                const rHandUp = rWrist.y < nose.y;
+                const lAngle = calculateAngle(lHip, lKnee, lAnkle);
+                const rAngle = calculateAngle(rHip, rKnee, rAnkle);
+                const ankleDiff = lAnkle.y - rAnkle.y; 
+
+                const THRESH_DOWN = 148; 
+                const THRESH_UP = 160;   
+                const LIFT_GAP = 0.05;   
+
+                const isBothHandsUp = lHandUp && rHandUp;
+                const isSquat = lAngle < THRESH_DOWN && rAngle < THRESH_DOWN && Math.abs(ankleDiff) < LIFT_GAP;
+                const isNeutral = !lHandUp && !rHandUp && lAngle > THRESH_UP && rAngle > THRESH_UP;
+
+                if (!gameActive && !waitingForNeutral && isBothHandsUp && isSquat) {
+                    prepareStart();
+                }
+
+                if (waitingForNeutral && isNeutral) {
+                    triggerRealStart();
+                }
+
+                if (gameActive) {
+                    if (isBothHandsUp) {
+                        if (handsUpStartTime === null) handsUpStartTime = Date.now();
+                        else if (Date.now() - handsUpStartTime >= EXIT_HOLD_TIME) {
+                            endGame(true);
+                            handsUpStartTime = null;
+                            return;
+                        }
+                    } else {
+                        handsUpStartTime = null;
+                    }
+                }
+
+                if (gameActive && !isProcessingSuccess) {
+                    const isLHandOnly = lHandUp && !rHandUp;
+                    const isRHandOnly = !lHandUp && rHandUp;
+                    const isLFootUp = ankleDiff < -LIFT_GAP && lAngle < THRESH_DOWN;
+                    const isRFootUp = ankleDiff > LIFT_GAP && rAngle < THRESH_DOWN;
+                    
+                    let success = false;
+                    switch(currentTarget) {
+                        case "両手": if(isBothHandsUp) success = true; break;
+                        case "左手": if(isLHandOnly) success = true; break;
+                        case "右手": if(isRHandOnly) success = true; break;
+                        case "両足": if(isSquat) success = true; break;
+                        case "左足": if(isLFootUp) success = true; break;
+                        case "右足": if(isRFootUp) success = true; break;
+                    }
+
+                    if (success) {
+                        isProcessingSuccess = true; 
+                        score++;
+                        document.getElementById('val-score').innerText = score;
+                        playSound(1200, 0.15);
+
+                        const cmdEl = document.getElementById('command-text');
+                        cmdEl.style.color = "#ff0000"; 
+                        cmdEl.style.textShadow = "4px 4px 0px #000, -4px -4px 0px #000, 0 0 50px rgba(0,0,0,1), 0 0 30px rgba(255, 0, 0, 0.8)";
+
+                        setTimeout(() => {
+                            nextCommand();
+                            isProcessingSuccess = false;
+                        }, 400);
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        });
+
+        pose.setOptions({ modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        function initApp() {
+            if (appInitialized) return;
+            audioCtx.resume();
+            appInitialized = true;
+            document.querySelector('.btn-start').style.display = 'none';
+            document.getElementById('setup-guide').innerHTML = "<span style='color:#00ff00; font-size:24px;'>カメラ起動中...</span>";
+            
+            camera.start().then(() => {
+                document.getElementById('start-screen').classList.add('preview-mode');
+                document.getElementById('setup-guide').innerHTML = `
+                    <span class="highlight" style="font-size:24px;">全身をカメラに映してください</span><br><br>
+                    <b>【開始方法】</b><br>
+                    「両手をあげてスクワット」ポーズ<br>
+                    のあと、姿勢を戻すとスタート！
+                `;
+            });
+        }
+    </script>
+</body>
+</html>
